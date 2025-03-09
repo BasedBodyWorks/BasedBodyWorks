@@ -1,0 +1,140 @@
+async function getAliaInit(
+  shopURL,
+  customerID,
+  openImmediately,
+  country,
+  market,
+  language
+) {
+  const ALIA_JWT_KEY = "alia-jwt";
+  const JWT_HEADER = "x-alia-jwt";
+  const IS_MOBILE_HEADER = "x-alia-is-mobile";
+
+  const url = new URL(BACKEND_URL);
+  url.pathname = "/user/users/init";
+
+  // verify request params
+  url.searchParams.append("shop", shopURL);
+  url.searchParams.append("shopify_customer_id", customerID);
+  url.searchParams.append("country", country);
+  url.searchParams.append(
+    "timezone",
+    Intl.DateTimeFormat().resolvedOptions().timeZone
+  );
+  url.searchParams.append("market", market);
+  url.searchParams.append("language", language);
+  const ipAddress = await aliaGetIPAddress();
+  if (ipAddress) {
+    url.searchParams.append("ip_address", ipAddress);
+  }
+  const userAgent = navigator.userAgent;
+  if (userAgent) {
+    url.searchParams.append("user_agent", userAgent);
+  }
+  const { key, flowID } = getAliaPreview();
+  if (key) {
+    url.searchParams.append("preview_key", key);
+    if (flowID) url.searchParams.append("flow_id", flowID);
+  }
+
+  // customer app params
+  url.searchParams.append(
+    "width",
+    Math.min(window.innerWidth, window.outerWidth)
+  );
+  url.searchParams.append("height", window.innerHeight);
+  url.searchParams.append("path", window.location.pathname + location.search);
+  if (openImmediately) url.searchParams.append("open_immediately", "true");
+  url.searchParams.append("url", window.location.href);
+
+  await (async () => {
+    try {
+      const hasKlaviyoScript = Array.from(document.scripts).find((s) =>
+        s.src.includes("klaviyo.js")
+      );
+      if (!window.klaviyo && hasKlaviyoScript) {
+        console.log("Klaviyo script found, waiting 1s for it to load");
+        await aliaWait(1000); // wait for klaviyo to load
+      }
+      const isIdentified = await Promise.race([
+        window.klaviyo?.isIdentified(),
+        aliaWait(1000), // timeout if Klaviyo doesn't respond
+      ]);
+      if (isIdentified !== undefined) {
+        url.searchParams.append(
+          "klaviyo_status",
+          isIdentified === true ? "identified" : "unidentified"
+        );
+      }
+    } catch (e) {
+      return;
+    }
+  })();
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      [JWT_HEADER]: getAliaJWT(),
+      [IS_MOBILE_HEADER]: window.innerWidth < 800 ? "true" : "false",
+    },
+  });
+  if (response.ok) {
+    const newJWT = response.headers.get(JWT_HEADER);
+    if (newJWT) {
+      saveAliaJWT(response.headers.get(JWT_HEADER));
+    }
+    return await response.json();
+  }
+
+  function saveAliaJWT(jwt) {
+    getStorage().setItem(ALIA_JWT_KEY, jwt);
+  }
+  function getAliaJWT() {
+    return getStorage().getItem(ALIA_JWT_KEY);
+  }
+  function getStorage() {
+    const isPreview = !!getAliaPreview().key;
+    return isPreview ? sessionStorage : localStorage;
+  }
+
+  function getAliaPreview() {
+    const aliaPreviewLocalStorageKey = "alia_preview_key";
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("alia_preview_key");
+    if (fromUrl) {
+      sessionStorage.setItem(aliaPreviewLocalStorageKey, fromUrl);
+    }
+    return {
+      key: sessionStorage.getItem(aliaPreviewLocalStorageKey),
+      flowID: params.get("flow_id"),
+    };
+  }
+
+  async function aliaGetIPAddress() {
+    try {
+      const response = await fetch("https://api.ipify.org");
+      if (response.status !== 200) return undefined;
+      return await response.text();
+    } catch (e) {
+      return undefined;
+    }
+  }
+}
+
+const ALIA_BOT_USER_AGENTS = [
+  "Googlebot",
+  "bingbot",
+  "facebookexternalhit",
+  "Storebot-Google",
+  "AmazonProductDiscovery",
+  "Petalbot",
+  "Pinterestbot",
+  "Applebot",
+];
+function aliaIsBot() {
+  const agent = navigator.userAgent;
+  return ALIA_BOT_USER_AGENTS.some((bot) => agent.includes(bot));
+}
+
+async function aliaWait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

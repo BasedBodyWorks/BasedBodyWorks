@@ -1,0 +1,382 @@
+let aliaPopup;
+function createAliaPopup({ popupUrl, noIframe }) {
+  if (aliaPopup) {
+    console.error("AliaPopup already created");
+    return;
+  }
+  if (window.Shopify.designMode) {
+    console.log("Not showing popup in Shopify theme editor");
+    return; // don't show in shopify theme editor
+  }
+  aliaPopup = noIframe ? new Alia(popupUrl) : new AliaPopup(popupUrl);
+  window.alia = aliaPopup;
+  executeOnReady();
+  const params = new URLSearchParams(window.location.search);
+  const popupParam = params.get("alia_popup");
+  if (popupParam === "1") {
+    aliaPopup.messages.open();
+  }
+
+  function executeOnReady() {
+    const onReady = window.onAliaReady;
+    const callOnReady = (callback) => {
+      if (typeof callback === "function") callback();
+    };
+    if (Array.isArray(onReady)) {
+      onReady.forEach(callOnReady);
+    } else {
+      callOnReady(onReady);
+    }
+    window.onAliaReady = undefined;
+    setTimeout(executeOnReady, 1000);
+  }
+}
+
+class Alia {
+  constructor(url) {
+    this.url = url;
+    this.events = new AliaEvents();
+    this.messages = new AliaPopupMessages(this);
+    this.mount();
+  }
+
+  async mount() {
+    await this.loadScript(BACKEND_URL + "/public/app.js");
+
+    const container = document.createElement("div");
+    container.style.position = "fixed";
+    document.body.appendChild(container);
+
+    if (!window.mountCustomerApp) {
+      console.error("mountCustomerApp is not defined");
+      return;
+    }
+    window.mountCustomerApp({
+      target: container,
+      params: new URL(this.url).searchParams.toString(),
+    });
+  }
+
+  postMessage(msg) {
+    window.postMessage(msg, "*");
+  }
+
+  async loadScript(url) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = url;
+      script.async = true;
+      script.onload = () => resolve(script);
+      script.onerror = () => reject(new Error("Failed to load Alia script"));
+      document.head.appendChild(script);
+    });
+  }
+
+  open(...args) {
+    this.messages.open(...args);
+  }
+
+  close(...args) {
+    this.messages.close(...args);
+  }
+}
+
+class AliaPopup {
+  constructor(url) {
+    const { div, iframe } = this.buildPopup(url);
+    this.url = url;
+    /**
+     * @type {HTMLDivElement}
+     */
+    this.div = div;
+    /**
+     * @type {HTMLIFrameElement}
+     * @public
+     */
+    this.iframe = iframe;
+    /**
+     * @type {AliaEvents}
+     * @public
+     */
+    this.events = new AliaEvents();
+    /**
+     * @type {AliaPopupMessages}
+     * @public
+     */
+    this.messages = new AliaPopupMessages(this);
+  }
+
+  buildPopup(url) {
+    const div = document.createElement("div");
+    div.style.position = "fixed";
+    div.style.display = "none";
+    document.body.appendChild(div);
+
+    const iframe = document.createElement("iframe");
+    iframe.src = url;
+    iframe.allow = "clipboard-write";
+    iframe.title = "Alia popup";
+    iframe.style.border = "none";
+    iframe.style.width = "100%";
+    iframe.style.height = "100%";
+    div.appendChild(iframe);
+
+    return { div, iframe };
+  }
+
+  setVisible(visible) {
+    if (visible) {
+      this.div.style.display = "block";
+    } else {
+      this.div.style.display = "none";
+      document.body.style.removeProperty("overflow");
+    }
+  }
+
+  setFrameStyles(modal, bodyStyles, styles) {
+    if (modal) {
+      this.iframe.contentWindow.focus();
+      this.div.setAttribute("aria-modal", "true");
+      this.div.setAttribute("role", "dialog");
+      this.div.setAttribute("aria-label", "Alia popup");
+    } else {
+      this.div.setAttribute("aria-modal", "false");
+      this.div.removeAttribute("role");
+      this.div.removeAttribute("aria-label");
+    }
+    for (const [key, value] of Object.entries(styles)) {
+      if (value === undefined) {
+        this.div.style.removeProperty(camelToKebab(key));
+      } else {
+        this.div.style[key] = value;
+      }
+    }
+    for (const [key, value] of Object.entries(bodyStyles)) {
+      if (value === undefined) {
+        document.body.style.removeProperty(key);
+      } else {
+        document.body.style[key] = value;
+      }
+    }
+  }
+
+  postMessage(msg) {
+    this.iframe.contentWindow?.postMessage(msg, "*");
+  }
+
+  open(...args) {
+    this.messages.open(...args);
+  }
+
+  close(...args) {
+    this.messages.close(...args);
+  }
+}
+
+class AliaPopupMessages {
+  /**
+   * @type {AliaPopup | Alia}
+   */
+  popup;
+  PREFIX = "alia.popup";
+  /**
+   * @type {() => void}
+   */
+  resetIdleTimeout;
+  readyToReceive = false;
+  msgBuffer = [];
+  cartWatcher = new AliaCartWatcher();
+
+  constructor(popup) {
+    this.popup = popup;
+    document.addEventListener("mouseleave", () => this.exitIntent());
+    this.cartWatcher.listen((cartDifferences) => {
+      if (cartDifferences.added.length > 0) {
+        this.addToCart(cartDifferences.added);
+      }
+    });
+    this.createAliaIdleInterval((seconds) => this.idle(seconds));
+    this.createScrollUpHandler(() => this.scrollUp());
+    this.createScrollDepthHandler((depth) => this.scrollDepth(depth));
+    this.handleMessages();
+    window.addEventListener("resize", () =>
+      this.resize(window.innerWidth, window.innerHeight)
+    );
+  }
+
+  getMessageType(type) {
+    return this.PREFIX + "." + type;
+  }
+
+  createAliaIdleInterval(callback) {
+    let start = Date.now();
+    const reset = () => (start = Date.now());
+    this.resetIdleTimeout = reset;
+
+    document.addEventListener("mousemove", reset);
+    document.addEventListener("scroll", reset);
+    document.addEventListener("touchstart", reset);
+
+    setInterval(() => {
+      const seconds = Math.round((Date.now() - start) / 1000);
+      callback(seconds);
+    }, 1000);
+  }
+
+  createScrollUpHandler(callback) {
+    let lastScrollTop = window.scrollY;
+    setInterval(() => {
+      const delta = window.scrollY - lastScrollTop;
+      lastScrollTop = window.scrollY;
+      if (delta < -500) {
+        callback();
+      }
+    }, 200);
+  }
+
+  createScrollDepthHandler(callback) {
+    let lastScrollTop = window.scrollY;
+    window.addEventListener("scroll", () => {
+      const delta = window.scrollY - lastScrollTop;
+      lastScrollTop = window.scrollY;
+      if (delta < 0) return; // don't trigger on scroll up
+      const scrollableHeight = document.body.scrollHeight - window.innerHeight;
+      const depth = (window.scrollY / scrollableHeight) * 100;
+      callback(depth);
+    });
+  }
+
+  handleMessages() {
+    window.addEventListener("message", (event) => {
+      if (typeof event.data !== "object") return;
+      if (event.data.type === this.getMessageType("setVisible")) {
+        this.popup.setVisible?.(event.data.visible);
+      } else if (event.data.type === this.getMessageType("setFrameStyles")) {
+        this.popup.setFrameStyles?.(
+          event.data.modal,
+          event.data.bodyStyles,
+          event.data.styles
+        );
+      } else if (event.data.type === this.getMessageType("active")) {
+        this.resetIdleTimeout();
+      } else if (event.data.type === this.getMessageType("addToCart")) {
+        aliaAddToCart(event.data.variantIDs);
+      } else if (event.data.type === this.getMessageType("eval")) {
+        this.handleEval(event.data.id, event.data.code);
+      } else if (event.data.type === this.getMessageType("setGroundData")) {
+        this.setGroundData(event.data.data);
+      } else if (event.data.type === this.getMessageType("blackCrowEvent")) {
+        this.handleBlackCrowEvent(event.data.event);
+      } else if (event.data.type === this.getMessageType("readyToReceive")) {
+        this.handleReadyToReceive();
+      } else if (event.data.type === this.getMessageType("integrationEvent")) {
+        this.handleIntegrationEvent(event.data.data);
+      }
+    });
+  }
+
+  setGroundData(data) {
+    localStorage.setItem("alia-popup-ground", JSON.stringify(data));
+  }
+
+  handleBlackCrowEvent(event) {
+    window.blackcrow = window.blackcrow || [];
+    window.blackcrow.push(event);
+  }
+
+  handleEval(id, code) {
+    const result = eval(code);
+    this.postMessage({ type: "evalResponse", id, result });
+  }
+
+  handleReadyToReceive() {
+    if (this.readyToReceive) return;
+    this.readyToReceive = true;
+    this.msgBuffer.forEach((msg) => this.postMessage(msg));
+  }
+
+  handleIntegrationEvent(data) {
+    this.popup.events.event(data);
+  }
+
+  postMessage(msg) {
+    if (!this.readyToReceive) {
+      this.msgBuffer.push(msg);
+      return;
+    }
+    this.popup.postMessage({
+      ...msg,
+      type: this.getMessageType(msg.type),
+    });
+  }
+  open(id) {
+    console.log("Alia opened by .open()");
+    this.postMessage({ type: "open", id });
+  }
+  close() {
+    console.log("Alia closed by .close()");
+    this.postMessage({ type: "close" });
+  }
+  exitIntent() {
+    this.postMessage({ type: "exitIntent" });
+  }
+  addToCart(items) {
+    this.postMessage({ type: "addToCart", data: { items } });
+  }
+  idle(seconds) {
+    this.postMessage({ type: "idle", seconds });
+  }
+  scrollUp() {
+    this.postMessage({ type: "scrollUp" });
+  }
+  scrollDepth(depth) {
+    this.postMessage({ type: "scrollDepth", depth });
+  }
+  resize(width, height) {
+    this.postMessage({ type: "resize", width, height });
+  }
+}
+
+class AliaEvents {
+  ALL_EVENTS = "*";
+  subscriptions = {};
+
+  constructor() {
+    this.events = [];
+  }
+
+  event(data) {
+    this.events.push(data);
+    if (this.subscriptions[data.type]) {
+      this.subscriptions[data.type].forEach((callback) => callback(data));
+    }
+    if (this.subscriptions[this.ALL_EVENTS]) {
+      this.subscriptions[this.ALL_EVENTS].forEach((callback) => callback(data));
+    }
+    this.fireDOMEvent(data);
+  }
+
+  on(event, callback) {
+    this.subscriptions[event] = this.subscriptions[event] || [];
+    this.subscriptions[event].push(callback);
+    return () => this.off(event, callback);
+  }
+
+  off(event, callback) {
+    if (this.subscriptions[event]) {
+      this.subscriptions[event] = this.subscriptions[event].filter(
+        (cb) => cb !== callback
+      );
+    }
+  }
+
+  fireDOMEvent(data) {
+    const type = "alia:" + data.type;
+    const event = new CustomEvent(type, { detail: data });
+    document.dispatchEvent(event);
+  }
+}
+
+function camelToKebab(str) {
+  return str.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+}

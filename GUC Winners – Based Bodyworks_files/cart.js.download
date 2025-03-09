@@ -1,0 +1,114 @@
+/**
+ * Thanks to Jake Casto (@0x15f) for the cart watcher
+ */
+class AliaCartWatcher {
+  listeners = [];
+
+  constructor() {
+    this.fetchCartData().then((cart) => {
+      this.storeCartLocally(cart);
+      this.observeCartChanges();
+    });
+  }
+
+  listen(cb) {
+    this.listeners.push(cb);
+    return () => {
+      this.listeners = this.listeners.filter((listener) => listener !== cb);
+    };
+  }
+
+  async fetchCartData() {
+    const response = await fetch("/cart.js");
+    return response.json();
+  }
+
+  storeCartLocally(cartData) {
+    localStorage.setItem("alia-cart", JSON.stringify(cartData));
+  }
+
+  getStoredCartData() {
+    if (!localStorage.getItem("alia-cart")) return;
+    return JSON.parse(localStorage.getItem("alia-cart"));
+  }
+
+  findCartDifferences(previousCart, currentCart) {
+    if (!previousCart) return { added: currentCart.items, removed: [] };
+    const itemsAdded = (left, right) =>
+      left.filter((item) => !right.some((rItem) => item.key === rItem.key));
+    const changes = {
+      added: itemsAdded(currentCart.items, previousCart.items),
+    };
+
+    previousCart.items.forEach((prevItem) => {
+      const matchingCurrentItem = currentCart.items.find(
+        (currItem) =>
+          currItem.key === prevItem.key &&
+          currItem.quantity !== prevItem.quantity
+      );
+      if (!matchingCurrentItem) return;
+      const quantityChange = matchingCurrentItem.quantity - prevItem.quantity;
+      const changedItem = { ...matchingCurrentItem };
+      changedItem.quantity = Math.abs(quantityChange);
+      quantityChange > 0 ? changes.added.push(changedItem) : null;
+    });
+
+    return changes;
+  }
+
+  async emitCartChanges() {
+    const currentCartData = await this.fetchCartData();
+    const previousCartData = this.getStoredCartData();
+    const cartDifferences = this.findCartDifferences(
+      previousCartData,
+      currentCartData
+    );
+
+    if (!cartDifferences.added.length) return;
+    this.listeners.forEach((listener) => listener(cartDifferences));
+    this.storeCartLocally(currentCartData);
+  }
+
+  observeCartChanges() {
+    const cartResourceObserver = new PerformanceObserver((entryList) => {
+      entryList.getEntries().forEach((entry) => {
+        const initiatorType = entry.initiatorType;
+
+        if (
+          initiatorType &&
+          ["xmlhttprequest", "fetch"].includes(initiatorType)
+        ) {
+          const isCartChangeRequest = /\/cart\//.test(entry.name);
+
+          if (isCartChangeRequest) {
+            this.emitCartChanges();
+          }
+        }
+      });
+    });
+
+    cartResourceObserver.observe({ entryTypes: ["resource"] });
+  }
+}
+
+async function aliaAddToCart(variantIDs) {
+  try {
+    const formData = {
+      items: variantIDs.map((id) => {
+        return {
+          id: id,
+          quantity: 1,
+        };
+      }),
+    };
+    await fetch(window.Shopify.routes.root + "cart/add.js", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(formData),
+    });
+  } catch (e) {
+    console.log("Failed to add to cart", e);
+  }
+}

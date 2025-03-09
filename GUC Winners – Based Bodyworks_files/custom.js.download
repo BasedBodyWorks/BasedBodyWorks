@@ -1,0 +1,89 @@
+function initCustomCode(shop) {
+  const initFns = {
+    "alia-test-dev.myshopify.com": initAliaTestDev,
+    "the-bright-angle.myshopify.com": initBrightAngle,
+    "yon-ka-paris-usa.myshopify.com": initYonkaParis,
+    "polar-recovery.myshopify.com": initPolarRecovery,
+    "pierrepark.myshopify.com": initPierrePark,
+  };
+  if (initFns[shop]) {
+    initFns[shop]();
+  }
+}
+
+function initBrightAngle() {
+  window.addEventListener("scroll", () => {
+    const iframe = getWidget();
+    const stickyCart = document.getElementById("stickyAddToCart");
+    if (stickyCart.classList.contains("sa-visible")) {
+      iframe.style.bottom = "60px";
+    } else {
+      iframe.style.bottom = "12px";
+    }
+  });
+}
+
+function initYonkaParis() {
+  const isCanvas = navigator.userAgent.toLowerCase().includes("canvas");
+  if (isCanvas) {
+    const iframe = getWidget();
+    iframe.style.display = "none";
+    destroyPopup();
+  }
+}
+
+function initAliaTestDev() {
+  console.log("Initialized custom code for alia-test-dev.myshopify.com");
+}
+
+function initPolarRecovery() {
+  const widget = getWidget();
+  if (widget) {
+    widget.style.setProperty("margin", "0px", "important");
+  }
+}
+
+function initPierrePark() {
+  setInterval(() => {
+    if (document.body.style.overflow === "hidden") {
+      document.documentElement.style.overflow = "hidden";
+    } else {
+      document.documentElement.style.removeProperty("overflow");
+    }
+  }, 200);
+}
+
+// DONT USE THIS, use function in customer-app-frame.liquid instead
+// just included it for backwards compatibility
+async function aliaOnsiteScript(shop) {
+  try {
+    const url = new URL(BACKEND_URL);
+    url.pathname = "/public/onsite-script";
+    url.searchParams.set("shop", shop);
+    const response = await fetch(url);
+    const script = await response.text();
+    if (script) {
+      eval(script);
+    }
+  } catch (e) {
+    console.error("Error evaluating onsite script", e);
+  }
+}
+
+/*
+ * DEPRECATED
+ * Use custom code filter instead: return window.UNHIDE_ALIA === true;
+ */
+function throwIfShouldHide(shopUrl) {
+  if (window.UNHIDE_ALIA === true) {
+    return;
+  }
+  const defaultHiddenUrls = [
+    "what-a-room-demo.myshopify.com",
+    "amberjack-shoes.myshopify.com",
+  ];
+  if (defaultHiddenUrls.includes(shopUrl)) {
+    console.log("Alia is hidden by default for this shop");
+    throw new Error("Alia is hidden by default for this shop");
+  }
+}

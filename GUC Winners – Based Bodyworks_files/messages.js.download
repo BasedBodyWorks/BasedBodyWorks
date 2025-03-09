@@ -1,0 +1,88 @@
+/**
+ * INBOUND MESSAGES --------------------------------
+ */
+function aliaHandleRedirect(path) {
+  if (path.startsWith("/")) {
+    path = path.substring(1);
+  }
+  window.location.href = window.Shopify.routes.root + path;
+}
+function aliaHandleApplyCode(code) {
+  fetch(`/discount/${code}`);
+}
+function aliaHandleIdentified({ profile, hook, properties }) {
+  const { name, email, phone, smsOptIn } = profile;
+  if (window.klaviyo) {
+    // Identifies a Klaviyo profile for onsite tracking
+    // https://developers.klaviyo.com/en/docs/custom_integration_faqs#my-customers-can-create-accounts-how-do-i-cookie-them
+    window.klaviyo.identify({
+      email,
+      first_name: name,
+      phone_number: phone,
+    });
+  }
+  if (window.attentive) {
+    window.attentive.analytics.identify({
+      phone,
+      email,
+    });
+  }
+  if (window.postscript) {
+    window.postscript.identify({
+      phone,
+    });
+  }
+  if (window.omnisend) {
+    window.omnisend.identifyContact({
+      email,
+      phone,
+    });
+  }
+  if (window.Shopify && window.Shopify.analytics) {
+    window.Shopify.analytics.publish("yotpo_identify_customer", {
+      phone,
+      email,
+    });
+  }
+  if (window.onetext && !!phone && smsOptIn !== false) {
+    window.onetext.optin.submit({
+      email,
+      phone,
+      customerProperties: properties,
+    });
+  }
+  if (window.smsbump) {
+    smsbump
+      .identify({
+        phone,
+        email,
+      })
+      .then();
+  }
+  if (window.pushowl) {
+    window.pushowl.identify({
+      email,
+      properties,
+    });
+  }
+  if (hook && typeof hook === "string") {
+    try {
+      eval(hook);
+    } catch (e) {
+      console.log("Error in Alia onSignup hook", e);
+    }
+  }
+}
+
+function handleAliaIframeMessages() {
+  window.addEventListener("message", function (event) {
+    if (typeof event.data !== "object") return;
+    if (event.data.type === "redirect") {
+      aliaHandleRedirect(event.data.path);
+    } else if (event.data.type === "applyCode") {
+      aliaHandleApplyCode(event.data.code);
+    } else if (event.data.type === "identified") {
+      aliaHandleIdentified(event.data);
+    }
+  });
+}
